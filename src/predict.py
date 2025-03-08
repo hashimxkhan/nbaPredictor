@@ -59,14 +59,19 @@ def get_team_stats(team_id):
     gamefinder = leaguegamefinder.LeagueGameFinder(team_id_nullable=team_id)
     games = gamefinder.get_data_frames()[0]
     
-    # Calculate average points per game from last 10 games
+    # Calculate statistics from last 10 games
     recent_games = games.head(10)
-    points_per_game = recent_games['PTS'].mean()
-    
-    # Get last game result
-    last_game_result = 1 if games.iloc[0]['WL'] == 'W' else 0
-    
-    return points_per_game, last_game_result
+    stats = {
+        'points_per_game': recent_games['PTS'].mean(),
+        'points_allowed': recent_games['PTS_opponent'].mean() if 'PTS_opponent' in recent_games.columns else recent_games['PTS'].mean(),
+        'win_streak': sum(1 for result in recent_games['WL'][:5] if result == 'W'),  # Last 5 games
+        'last_game_result': 1 if games.iloc[0]['WL'] == 'W' else 0,
+        'home_record': sum(1 for idx, game in recent_games.iterrows() if 'vs.' in game['MATCHUP'] and game['WL'] == 'W') / 
+                      sum(1 for idx, game in recent_games.iterrows() if 'vs.' in game['MATCHUP']),
+        'away_record': sum(1 for idx, game in recent_games.iterrows() if '@' in game['MATCHUP'] and game['WL'] == 'W') / 
+                      sum(1 for idx, game in recent_games.iterrows() if '@' in game['MATCHUP'])
+    }
+    return stats
 
 def predict_game(team1_name, team2_name, is_team1_home=True):
     """Predict the outcome of a game between two teams"""
@@ -96,18 +101,23 @@ def predict_game(team1_name, team2_name, is_team1_home=True):
         team2_id = team_dict[team2_abbr]
         
         # Get team stats
-        team1_ppg, team1_last_result = get_team_stats(team1_id)
+        team1_stats = get_team_stats(team1_id)
+        team2_stats = get_team_stats(team2_id)
         
-        # Create prediction data
+        # Create prediction data with enhanced features
         pred_data = pd.DataFrame({
             'TEAM_ID': [team1_id],
             'OPPONENT_TEAM_ID': [team2_id],
-            'Points_Per_Game': [team1_ppg],
+            'Points_Per_Game': [team1_stats['points_per_game']],
+            'Points_Allowed': [team1_stats['points_allowed']],
+            'Win_Streak': [team1_stats['win_streak']],
             'HOME_GAME': [1 if is_team1_home else 0],
-            'LAST_GAME_RESULT': [team1_last_result]
+            'LAST_GAME_RESULT': [team1_stats['last_game_result']],
+            'Home_Record': [team1_stats['home_record'] if is_team1_home else team1_stats['away_record']],
+            'Away_Record': [team1_stats['away_record'] if is_team1_home else team1_stats['home_record']]
         })
         
-        # Make prediction
+        # Make prediction using the trained model
         win_prob = model.predict_proba(pred_data)[0]
         prediction = model.predict(pred_data)[0]
         
@@ -117,7 +127,16 @@ def predict_game(team1_name, team2_name, is_team1_home=True):
             'home_team': team1_full if is_team1_home else team2_full,
             'prediction': 'Win' if prediction == 1 else 'Loss',
             'win_probability': win_prob[1],
-            'loss_probability': win_prob[0]
+            'loss_probability': win_prob[0],
+            'details': {
+                'team1_ppg': team1_stats['points_per_game'],
+                'team2_ppg': team2_stats['points_per_game'],
+                'team1_win_streak': team1_stats['win_streak'],
+                'team2_win_streak': team2_stats['win_streak'],
+                'home_advantage': '+10%' if is_team1_home else '-10%',
+                'team1_record': f"{team1_stats['home_record']:.1%}" if is_team1_home else f"{team1_stats['away_record']:.1%}",
+                'team2_record': f"{team2_stats['away_record']:.1%}" if is_team1_home else f"{team2_stats['home_record']:.1%}"
+            }
         }
         
     except Exception as e:
@@ -155,6 +174,14 @@ def main():
             print(f"Predicted outcome: {result['prediction']}")
             print(f"Win probability: {result['win_probability']:.2%}")
             print(f"Loss probability: {result['loss_probability']:.2%}")
+            print("\nTeam Statistics:")
+            print(f"- {result['team1']} Points Per Game: {result['details']['team1_ppg']:.1f}")
+            print(f"- {result['team2']} Points Per Game: {result['details']['team2_ppg']:.1f}")
+            print(f"- {result['team1']} Win Streak (last 5 games): {result['details']['team1_win_streak']}")
+            print(f"- {result['team2']} Win Streak (last 5 games): {result['details']['team2_win_streak']}")
+            print(f"- Home Court Advantage: {result['details']['home_advantage']}")
+            print(f"- {result['team1']} {'Home' if result['team1'] == result['home_team'] else 'Away'} Record: {result['details']['team1_record']}")
+            print(f"- {result['team2']} {'Away' if result['team1'] == result['home_team'] else 'Home'} Record: {result['details']['team2_record']}")
         
         print("\n" + "="*50)
     

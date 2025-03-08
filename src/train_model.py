@@ -34,15 +34,41 @@ def process_data(all_games, team_abbr_to_id):
     all_games['GAME_DATE'] = pd.to_datetime(all_games['GAME_DATE'])
     all_games['WIN'] = all_games['WL'].apply(lambda x: 1 if x == 'W' else 0)
     
-    # Calculate points per game
-    all_games['PTS'] = all_games['PTS'].astype(float)
-    all_games['Points_Per_Game'] = all_games.groupby('TEAM_ID')['PTS'].transform('mean')
+    # Calculate points per game (rolling 10-game average)
+    all_games['Points_Per_Game'] = all_games.groupby('TEAM_ID')['PTS'].transform(lambda x: x.rolling(10, min_periods=1).mean())
+    
+    # Calculate points allowed (rolling 10-game average)
+    all_games['Points_Allowed'] = all_games.groupby('TEAM_ID')['PTS'].transform(lambda x: x.rolling(10, min_periods=1).mean().shift(1))
     
     # Create home game indicator
     all_games['HOME_GAME'] = all_games['MATCHUP'].apply(lambda x: 1 if 'vs.' in x else 0)
     
+    # Calculate win streak (last 5 games)
+    all_games['Win_Streak'] = all_games.groupby('TEAM_ID')['WIN'].transform(
+        lambda x: x.rolling(5, min_periods=1).sum()
+    )
+    
     # Add last game result
     all_games['LAST_GAME_RESULT'] = all_games.groupby('TEAM_ID')['WIN'].shift(1).fillna(0)
+    
+    # Calculate home/away record (rolling 10-game)
+    home_games = all_games[all_games['HOME_GAME'] == 1]
+    away_games = all_games[all_games['HOME_GAME'] == 0]
+    
+    home_games['Home_Record'] = home_games.groupby('TEAM_ID')['WIN'].transform(
+        lambda x: x.rolling(10, min_periods=1).mean()
+    )
+    away_games['Away_Record'] = away_games.groupby('TEAM_ID')['WIN'].transform(
+        lambda x: x.rolling(10, min_periods=1).mean()
+    )
+    
+    all_games['Home_Record'] = home_games['Home_Record']
+    all_games['Away_Record'] = away_games['Away_Record']
+    
+    # Fill NaN values with 0.5 (neutral starting point)
+    all_games['Home_Record'] = all_games['Home_Record'].fillna(0.5)
+    all_games['Away_Record'] = all_games['Away_Record'].fillna(0.5)
+    all_games['Points_Allowed'] = all_games['Points_Allowed'].fillna(all_games['PTS'].mean())
     
     # Extract opponent team ID
     def get_opponent_team_id(matchup, team_id):
@@ -62,16 +88,25 @@ def process_data(all_games, team_abbr_to_id):
 def train_model(all_games):
     """Train the prediction model"""
     # Prepare features
-    features = ['TEAM_ID', 'OPPONENT_TEAM_ID', 'Points_Per_Game', 'HOME_GAME', 'LAST_GAME_RESULT']
+    features = [
+        'TEAM_ID', 'OPPONENT_TEAM_ID', 'Points_Per_Game', 'Points_Allowed',
+        'Win_Streak', 'HOME_GAME', 'LAST_GAME_RESULT', 'Home_Record', 'Away_Record'
+    ]
+    
     X = all_games[features]
     y = all_games['WIN']
     
     # Split the data
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    # Train model
+    # Train model with more estimators and balanced class weights
     print("Training model...")
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model = RandomForestClassifier(
+        n_estimators=200,
+        max_depth=10,
+        class_weight='balanced',
+        random_state=42
+    )
     model.fit(X_train, y_train)
     
     # Evaluate model
